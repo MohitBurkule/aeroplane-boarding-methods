@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Phaser 3 - Airplane Boarding Simulation</title>
+  <script src="https://cdn.jsdelivr.net/npm/phaser@3.60.0/dist/phaser.js"></script>
+  <style>
+    html, body {
+      margin: 0; 
+      padding: 0;
+      width: 100%; 
+      height: 100%;
+      overflow: hidden;
+      background: #F0F0F0;
+      font-family: sans-serif;
+    }
+    #gameContainer {
+      width: 100%;
+      height: 100%;
+      position: relative;
+    }
+    #controls {
+      position: absolute;
+      top: 1rem;
+      left: 1rem;
+      padding: 0.5rem 0.75rem;
+      background: rgba(255,255,255,0.85);
+      border-radius: 6px;
+      box-shadow: 0 0 6px rgba(0,0,0,0.2);
+      z-index: 10;
+    }
+    .methodBtn {
+      display: block;
+      margin: 0.2rem 0;
+      padding: 0.3rem 0.5rem;
+      border: none;
+      border-radius: 4px;
+      background: #2b669a;
+      color: white;
+      cursor: pointer;
+      width: 130px;
+      text-align: left;
+    }
+    .methodBtn:hover {
+      background: #3b7fad;
+    }
+    #startBtn, #clearBtn {
+      display: block;
+      margin-top: 0.5rem;
+      padding: 0.5rem;
+      border: none;
+      border-radius: 4px;
+      background: #0B6;
+      color: white;
+      cursor: pointer;
+      width: 130px;
+      text-align: center;
+    }
+    #startBtn:hover, #clearBtn:hover {
+      background: #0D7;
+    }
+    #info {
+      margin-top: 0.5rem;
+      font-size: 0.85rem;
+      color: #333;
+      min-height: 1.2rem;
+    }
+  </style>
+</head>
+<body>
+<div id="gameContainer"></div>
+
+<div id="controls">
+  <strong>Boarding Method:</strong>
+  <button class="methodBtn" id="btnFrontBack">Front to Back</button>
+  <button class="methodBtn" id="btnBackFront">Back to Front</button>
+  <button class="methodBtn" id="btnRandom">Random</button>
+  <button class="methodBtn" id="btnWindowFirst">Window First</button>
+  <button class="methodBtn" id="btnAisleFirst">Aisle First</button>
+  <button class="methodBtn" id="btnOptimal">Optimal</button>
+
+  <button id="startBtn">Start Boarding</button>
+  <button id="clearBtn">Clear Boarding</button>
+  <div id="info"></div>
+</div>
+
+<script>
+/*
+  Phaser 3 Airplane Boarding Simulation
+  - 10 rows, 4 seats each (A,B | aisle | C,D)
+  - Multiple boarding methods
+  - Clear Boarding function
+  - Plane shape with cockpit at top, symmetrical wings, tail at bottom
+  - Passengers walk a multi-step path (avoid seats directly)
+*/
+
+/* ========== PASSENGER CLASS ========== */
+class Passenger {
+  constructor(scene, seatLabel, spawnX, spawnY, color) {
+    this.scene = scene;
+    this.seatLabel = seatLabel;
+    this.inSeat = false;
+    this.radius = 10;
+
+    // Find seat object
+    const seatObj = scene.seats.find(s => s.label === seatLabel);
+    if (seatObj) {
+      this.seatX = seatObj.x + seatObj.w / 2;
+      this.seatY = seatObj.y + seatObj.h / 2;
+      this.rowNum = seatObj.row;
+      this.col = seatObj.col; // "A","B","C","D"
+    } else {
+      console.warn("Invalid seat label:", seatLabel);
+      this.seatX = spawnX;
+      this.seatY = spawnY;
+      this.rowNum = 1;
+      this.col = "A";
+    }
+
+    // Add a circle representing the passenger
+    this.sprite = scene.add.circle(spawnX, spawnY, this.radius, color);
+    this.sprite.setStrokeStyle(2, 0x693F1A);
+
+    // Build a multi-step route using tweens
+    this.buildRoute();
+  }
+
+  buildRoute() {
+    const tweenSpeed = 1500; // base duration per step
+
+    // 1) Move horizontally inside plane => x= planeDoorX
+    this.scene.tweens.add({
+      targets: this.sprite,
+      x: this.scene.planeDoorX,
+      duration: tweenSpeed,
+      ease: 'Linear',
+      onComplete: () => {
+        // 2) Move down the aisle to row's Y
+        const rowData = this.scene.rowData.find(r => r.row === this.rowNum);
+        if(!rowData){
+          console.warn(`No rowData found for row ${this.rowNum}`);
+          return;
+        }
+        this.scene.tweens.add({
+          targets: this.sprite,
+          y: rowData.aisleY,
+          duration: tweenSpeed,
+          ease: 'Linear',
+          onComplete: () => {
+            // 3) Move horizontally to seatX
+            this.scene.tweens.add({
+              targets: this.sprite,
+              x: this.seatX,
+              duration: tweenSpeed,
+              ease: 'Linear',
+              onComplete: () => {
+                // 4) Move slightly to seatY if needed
+                this.scene.tweens.add({
+                  targets: this.sprite,
+                  y: this.seatY,
+                  duration: tweenSpeed * 0.7,
+                  ease: 'Linear',
+                  onComplete: () => {
+                    this.inSeat = true;
+                    // Change stroke to indicate seated
+                    this.sprite.setStrokeStyle(2, 0xffffff);
+                  }
+                });
+              }
+            });
+          }
+        });
+      }
+    });
+  }
+
+  destroy() {
+    // clean up the sprite
+    this.sprite.destroy();
+  }
+}
+
+/* ========== BOARDING SCENE ========== */
+class BoardingScene extends Phaser.Scene {
+  constructor(){
+    super("BoardingScene");
+  }
+
+  init(){
+    this.selectedMethod    = "front-back"; // default
+    this.simulationRunning = false;
+    this.boardingFinished  = false;
+    this.startTime         = 0;
+    this.endTime           = 0;
+
+    // arrays
+    this.seats      = []; // { row, col, x, y, w, h, label }
+    this.passengers = [];
+    this.rowData    = [];
+  }
+
+  preload(){
+    // no external assets
+  }
+
+  create(){
+    // build airplane shape
+    this.createAirplane();
+
+    // build seat layout
+    this.buildSeats();
+
+    // build rowData
+    this.buildRowData();
+
+    // set up text
+    this.infoText = this.add.text(20, 20, "", {
+      font: "18px Arial",
+      fill: "#333"
+    }).setDepth(10);
+
+    // hook up boarding method buttons
+    document.getElementById("btnFrontBack").onclick  = ()=>{ this.selectedMethod = "front-back";  this.updateInfo(); };
+    document.getElementById("btnBackFront").onclick  = ()=>{ this.selectedMethod = "back-front";  this.updateInfo(); };
+    document.getElementById("btnRandom").onclick     = ()=>{ this.selectedMethod = "random";      this.updateInfo(); };
+    document.getElementById("btnWindowFirst").onclick= ()=>{ this.selectedMethod = "window-first";this.updateInfo(); };
+    document.getElementById("btnAisleFirst").onclick = ()=>{ this.selectedMethod = "aisle-first"; this.updateInfo(); };
+    document.getElementById("btnOptimal").onclick    = ()=>{ this.selectedMethod = "optimal";     this.updateInfo(); };
+
+    // Start Boarding
+    document.getElementById("startBtn").onclick = ()=> {
+      if(!this.simulationRunning){
+        this.startBoarding();
+      }
+    };
+
+    // Clear Boarding
+    document.getElementById("clearBtn").onclick = ()=> {
+      this.clearBoarding();
+    };
+
+    // initial info
+    this.updateInfo();
+  }
+
+  update(time, delta){
+    if(this.simulationRunning && !this.boardingFinished){
+      // check if all seated
+      const allSeated = this.passengers.every(p => p.inSeat === true);
+      if(allSeated){
+        this.boardingFinished = true;
+        this.endTime = performance.now();
+        const totalSec = ((this.endTime - this.startTime)/1000).toFixed(2);
+        this.infoText.setText(`All boarded in ${totalSec}s. Method: ${this.selectedMethod}`);
+      }
+    }
+  }
+
+  updateInfo(){
+    const info = `Method: ${this.selectedMethod}`;
+    this.infoText.setText(info);
+    document.getElementById("info").textContent = info;
+  }
+
+  /* ========== CREATE THE AIRPLANE (TOP-DOWN VIEW) ========== */
+  createAirplane(){
+    // We'll define a bounding box for the plane
+    // to ensure it fits 1000x600 well
+    // Cockpit at top, tail at bottom
+    this.planeBox = {
+      x: 300,  // center horizontally
+      y: 50,
+      w: 400,
+      h: 450
+    };
+
+    // Draw fuselage rectangle
+    const fuselageG = this.add.graphics({ lineStyle:{ width: 4, color: 0xB3C4C1 }, fillStyle:{ color: 0xE5FFFB }});
+    fuselageG.fillRect(this.planeBox.x, this.planeBox.y, this.planeBox.w, this.planeBox.h);
+    fuselageG.strokeRect(this.planeBox.x, this.planeBox.y, this.planeBox.w, this.planeBox.h);
+
+    // Cockpit (small triangle at top center)
+    let cockpitG = this.add.graphics({ fillStyle:{ color: 0xCCEFEA }});
+    // top center of fuselage is (planeBox.x + planeBox.w/2, planeBox.y)
+    // let's create a small triangle above it
+    cockpitG.fillTriangle(
+      this.planeBox.x + this.planeBox.w/2, this.planeBox.y - 40,
+      this.planeBox.x + (this.planeBox.w/2) - 30, this.planeBox.y,
+      this.planeBox.x + (this.planeBox.w/2) + 30, this.planeBox.y
+    );
+
+    // Wings (left and right, symmetrical)
+    const wingG = this.add.graphics({ fillStyle:{ color: 0xCCEFEA } });
+    const midX = this.planeBox.x + this.planeBox.w/2;
+    const midY = this.planeBox.y + this.planeBox.h/2;
+
+    // Left wing
+    wingG.fillTriangle(
+      this.planeBox.x, midY,                  // left middle edge
+      this.planeBox.x - 60, midY - 50,        // left top
+      this.planeBox.x - 60, midY + 50         // left bottom
+    );
+
+    // Right wing
+    wingG.fillTriangle(
+      this.planeBox.x + this.planeBox.w, midY, // right middle edge
+      this.planeBox.x + this.planeBox.w + 60, midY - 50,
+      this.planeBox.x + this.planeBox.w + 60, midY + 50
+    );
+
+    // Tail (small rectangle at bottom center)
+    const tailG = this.add.graphics({ fillStyle:{ color: 0xCCEFEA }});
+    tailG.fillRect(
+      this.planeBox.x + this.planeBox.w/2 - 15,
+      this.planeBox.y + this.planeBox.h,
+      30,
+      40
+    );
+
+    // planeDoorX for passengers to walk in horizontally
+    this.planeDoorX = this.planeBox.x + 30; 
+  }
+
+  /* ========== BUILD SEATS (TOP = ROW1, BOTTOM = ROW10) ========== */
+  buildSeats(){
+    // We'll define 10 rows (top to bottom), 4 seats each (A,B - aisle - C,D left to right)
+    const seatWidth  = 40;
+    const seatHeight = 30;
+    const rowCount   = 10;
+    const topMargin  = this.planeBox.y + 30;
+    const bottomMargin = this.planeBox.y + this.planeBox.h - 30;
+    const leftMargin = this.planeBox.x + 20;
+    const rightMargin= this.planeBox.x + this.planeBox.w - 20;
+    
+    // vertical spacing
+    const totalSeatAreaHeight = (bottomMargin - topMargin);
+    const rowGap = totalSeatAreaHeight / rowCount;
+
+    // horizontal arrangement for seats A,B -> aisle -> C,D
+    // We'll define some columns:
+    // A: leftMargin
+    // B: leftMargin + seatWidth + small gap
+    // aisle gap
+    // C
+    // D
+    const colGap  = 5; // gap between seats
+    const seatCols = {
+      A: leftMargin,
+      B: leftMargin + seatWidth + colGap,
+      // then an aisle gap of ~60
+      C: leftMargin + seatWidth*2 + colGap + 60,
+      D: leftMargin + seatWidth*3 + colGap + 60
+    };
+
+    const COLS = ["A","B","C","D"];
+
+    for(let r=1; r<=rowCount; r++){
+      // row Y => topMargin + (r-1)*rowGap
+      // seat's Y => center the seat in that row gap
+      let seatY = topMargin + (r-1)*rowGap;
+      for(let c of COLS){
+        let seatX = seatCols[c];
+        let lbl = `${r}${c}`;
+        // Draw seat rectangle
+        let seatG = this.add.graphics({ lineStyle: { width:2, color:0x99A3F2 }, fillStyle:{ color:0x000080 }});
+        seatG.fillRect(seatX, seatY, seatWidth, seatHeight);
+        seatG.strokeRect(seatX, seatY, seatWidth, seatHeight);
+        this.add.text(seatX+5, seatY+8, lbl, {
+          font: "14px Arial",
+          fill: "#FFF"
+        });
+        this.seats.push({
+          label: lbl,
+          row: r,
+          col: c,
+          x: seatX,
+          y: seatY,
+          w: seatWidth,
+          h: seatHeight
+        });
+      }
+    }
+  }
+
+  /* ========== BUILD ROW DATA (AISLE Y) ========== */
+  buildRowData(){
+    // We define rowData so each row has an aisleY
+    // We'll say the aisle is the horizontal center line => sprite.y doesn't change for row-based movement
+    // Instead we move them in from left, then down to rowY, then horizontally to seat
+    //
+    // But user wants them to walk "down the aisle." We'll define the aisle as the middle Y for each row
+    // Actually let's define the seat center for each row => seat #1's center?
+    // We'll do a simpler approach: the row's "aisleY" is the seatY + seatHeight/2
+    // (like a corridor that runs horizontally).
+    // Then passengers can walk from top left to "planeDoorX, seatYcenter," then horizontally to seat.
+
+    // For each row in seats, pick row #, find the seat in col B or C as "aisle reference," or just average
+    let uniqueRows = [...new Set(this.seats.map(s => s.row))].sort((a,b)=>a-b);
+    for(let r of uniqueRows){
+      let rowSeats = this.seats.filter(s => s.row===r);
+      let avgY = rowSeats.reduce((acc,v)=>acc+(v.y + v.h/2), 0)/rowSeats.length;
+      this.rowData.push({ row: r, aisleY: avgY });
+    }
+  }
+
+  /* ========== START BOARDING ========== */
+  startBoarding(){
+    this.simulationRunning = true;
+    this.boardingFinished  = false;
+    this.startTime = performance.now();
+    this.infoText.setText("Boarding started... Method: " + this.selectedMethod);
+
+    // reorder seats
+    let seatList = this.seats.map(s => s.label);
+    seatList = this.reorderSeats(seatList, this.selectedMethod);
+
+    // spawn passengers with small delays
+    seatList.forEach((lbl, i)=>{
+      this.time.delayedCall(i*250, ()=> {
+        this.spawnPassenger(lbl);
+      });
+    });
+  }
+
+  /* ========== CLEAR BOARDING ========== */
+  clearBoarding(){
+    // stop boarding
+    this.simulationRunning  = false;
+    this.boardingFinished   = false;
+    this.infoText.setText("Boarding cleared. Select method and Start again.");
+    // remove existing passengers
+    this.passengers.forEach(p => p.destroy());
+    this.passengers = [];
+  }
+
+  /* ========== SPAWN PASSENGER ========== */
+  spawnPassenger(seatLabel){
+    // spawn outside top-left
+    const spawnX = this.planeBox.x - 50;
+    const spawnY = this.planeBox.y + 50; 
+    // random offset so not all spawn exactly same y
+    let offset = Phaser.Math.Between(-30,30);
+    const px = spawnX;
+    const py = spawnY + offset;
+
+    // random color
+    const colors = [0xFFDBAC, 0xF1C27D, 0xE0AC69, 0xC68642, 0x8D5524];
+    const color = colors[Phaser.Math.Between(0, colors.length-1)];
+
+    let passenger = new Passenger(this, seatLabel, px, py, color);
+    this.passengers.push(passenger);
+  }
+
+  /* ========== REORDER SEATS BY METHOD ========== */
+  reorderSeats(seatList, method){
+    // parse row/col
+    let data = seatList.map(lbl => {
+      return {
+        label: lbl,
+        row: parseInt(lbl),
+        col: lbl.replace(/^\d+/,"")
+      };
+    });
+    // define priorities
+    let windowOrder = { "A": 1, "D": 2, "B": 3, "C": 4 };
+    let aisleOrder  = { "B": 1, "C": 2, "A": 3, "D": 4 };
+    switch(method){
+      case "front-back":
+        data.sort((a,b)=> (a.row - b.row) || a.col.localeCompare(b.col));
+        break;
+      case "back-front":
+        data.sort((a,b)=> (b.row - a.row) || a.col.localeCompare(b.col));
+        break;
+      case "random":
+        for(let i=data.length-1;i>0;i--){
+          let j = Phaser.Math.Between(0,i);
+          [data[i], data[j]]=[data[j], data[i]];
+        }
+        break;
+      case "window-first":
+        data.sort((a,b)=>{
+          if(a.row!==b.row) return a.row - b.row;
+          return windowOrder[a.col] - windowOrder[b.col];
+        });
+        break;
+      case "aisle-first":
+        data.sort((a,b)=>{
+          if(a.row!==b.row) return a.row - b.row;
+          return aisleOrder[a.col] - aisleOrder[b.col];
+        });
+        break;
+      case "optimal":
+        // example: back-front window-first
+        data.sort((a,b)=>{
+          if(a.row!==b.row) return b.row - a.row; 
+          return windowOrder[a.col] - windowOrder[b.col];
+        });
+        break;
+      default:
+        data.sort((a,b)=> (a.row - b.row) || a.col.localeCompare(b.col));
+    }
+    return data.map(d => d.label);
+  }
+}
+
+/* ========== GAME CONFIG ========== */
+const config = {
+  type: Phaser.AUTO,
+  width: 1000,
+  height: 600,
+  backgroundColor: "#F0F0F0",
+  parent: "gameContainer",
+  scene: [ BoardingScene ]
+};
+
+new Phaser.Game(config);
+</script>
+</body>
+</html>
