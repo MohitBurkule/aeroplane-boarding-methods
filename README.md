@@ -1,4 +1,4 @@
-# aeroplane-boarding-methods
+# aeroplane-boarding-methods [WIP]
 
 This repo demonstrates different boarding methods inspired by "Optimal Boarding Methods for Airline Passengers"
 
