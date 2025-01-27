@@ -2,14 +2,12 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Phaser 3 - Airplane Boarding Simulation</title>
+  <title>Airplane Boarding Simulation</title>
   <script src="https://cdn.jsdelivr.net/npm/phaser@3.60.0/dist/phaser.js"></script>
   <style>
     html, body {
-      margin: 0; 
-      padding: 0;
-      width: 100%; 
-      height: 100%;
+      margin: 0; padding: 0;
+      width: 100%; height: 100%;
       overflow: hidden;
       background: #F0F0F0;
       font-family: sans-serif;
@@ -86,117 +84,151 @@
 
 <script>
 /*
-  Phaser 3 Airplane Boarding Simulation
-  - 10 rows, 4 seats each (A,B | aisle | C,D)
-  - Multiple boarding methods
-  - Clear Boarding function
-  - Plane shape with cockpit at top, symmetrical wings, tail at bottom
-  - Passengers walk a multi-step path (avoid seats directly)
+  Phaser 3 - Realistic Airplane Boarding
+  Requirements addressed:
+  - 10 rows, 4 seats (A,B | aisle | C,D)
+  - "Top-down" plane with center aisle
+  - No seat overlap (they walk in the aisle, then step into seat)
+  - Basic passenger collision (they queue if one is too close)
+  - Timer & final message at bottom-left
+  - Clear boarding button
+  - Colored & labeled passengers so you know each seat assignment
 */
 
-/* ========== PASSENGER CLASS ========== */
+/* =============== PASSENGER CLASS =============== */
 class Passenger {
-  constructor(scene, seatLabel, spawnX, spawnY, color) {
+  constructor(scene, seatLabel, seatObj, spawnX, spawnY, color){
     this.scene = scene;
     this.seatLabel = seatLabel;
     this.inSeat = false;
+    this.x = spawnX;
+    this.y = spawnY;
     this.radius = 10;
+    this.speed = 1.6; // movement speed in px/step
+    this.seatObj = seatObj; // { row, col, x, y, w, h }
+    this.color = color;
 
-    // Find seat object
-    const seatObj = scene.seats.find(s => s.label === seatLabel);
-    if (seatObj) {
-      this.seatX = seatObj.x + seatObj.w / 2;
-      this.seatY = seatObj.y + seatObj.h / 2;
-      this.rowNum = seatObj.row;
-      this.col = seatObj.col; // "A","B","C","D"
-    } else {
-      console.warn("Invalid seat label:", seatLabel);
-      this.seatX = spawnX;
-      this.seatY = spawnY;
-      this.rowNum = 1;
-      this.col = "A";
-    }
+    // Create the circle
+    this.circle = scene.add.circle(this.x, this.y, this.radius, this.color);
+    // Outline
+    this.circle.setStrokeStyle(2, 0x000000);
 
-    // Add a circle representing the passenger
-    this.sprite = scene.add.circle(spawnX, spawnY, this.radius, color);
-    this.sprite.setStrokeStyle(2, 0x693F1A);
+    // Create the seat label text above the passenger
+    this.labelText = scene.add.text(this.x - 12, this.y - 28, seatLabel, {
+      font: "14px Arial",
+      fill: "#000"
+    });
+    // For legibility, consider a small background or stroke
+    // But let's keep it simple
 
-    // Build a multi-step route using tweens
+    // We'll define a route of up to 3-4 points:
+    // 1) Move down to row's aisleY
+    // 2) Move horizontally to seat center X
+    // 3) Move a small vertical offset to seat center Y
+    // We'll do it step by step in update()
+    this.route = [];
+    this.routeIndex = 0;
     this.buildRoute();
   }
 
-  buildRoute() {
-    const tweenSpeed = 1500; // base duration per step
+  buildRoute(){
+    // The row's aisle Y
+    const rowAisleY = this.scene.rowData.find(r => r.row === this.seatObj.row)?.aisleY || this.seatObj.y+(this.seatObj.h/2);
 
-    // 1) Move horizontally inside plane => x= planeDoorX
-    this.scene.tweens.add({
-      targets: this.sprite,
-      x: this.scene.planeDoorX,
-      duration: tweenSpeed,
-      ease: 'Linear',
-      onComplete: () => {
-        // 2) Move down the aisle to row's Y
-        const rowData = this.scene.rowData.find(r => r.row === this.rowNum);
-        if(!rowData){
-          console.warn(`No rowData found for row ${this.rowNum}`);
-          return;
-        }
-        this.scene.tweens.add({
-          targets: this.sprite,
-          y: rowData.aisleY,
-          duration: tweenSpeed,
-          ease: 'Linear',
-          onComplete: () => {
-            // 3) Move horizontally to seatX
-            this.scene.tweens.add({
-              targets: this.sprite,
-              x: this.seatX,
-              duration: tweenSpeed,
-              ease: 'Linear',
-              onComplete: () => {
-                // 4) Move slightly to seatY if needed
-                this.scene.tweens.add({
-                  targets: this.sprite,
-                  y: this.seatY,
-                  duration: tweenSpeed * 0.7,
-                  ease: 'Linear',
-                  onComplete: () => {
-                    this.inSeat = true;
-                    // Change stroke to indicate seated
-                    this.sprite.setStrokeStyle(2, 0xffffff);
-                  }
-                });
-              }
-            });
-          }
-        });
-      }
-    });
+    // Step 1: Move down from spawn to row's aisleY (same x, different y)
+    this.route.push({ x: this.x, y: rowAisleY });
+
+    // Step 2: Move horizontally to seat center X
+    this.route.push({ x: this.seatObj.x + this.seatObj.w/2, y: rowAisleY });
+
+    // Step 3: Move vertically to seat center Y
+    this.route.push({ x: this.seatObj.x + this.seatObj.w/2, y: this.seatObj.y + this.seatObj.h/2 });
   }
 
-  destroy() {
-    // clean up the sprite
-    this.sprite.destroy();
+  update(passengers){
+    if(this.inSeat) return;
+    if(this.routeIndex >= this.route.length){
+      // done
+      this.inSeat = true;
+      // change stroke color to indicate seated
+      this.circle.setStrokeStyle(2, 0xffffff);
+      return;
+    }
+
+    // The next point
+    const pt = this.route[this.routeIndex];
+    let dx = pt.x - this.x;
+    let dy = pt.y - this.y;
+    const dist = Math.sqrt(dx*dx + dy*dy);
+    if(dist < this.speed){
+      // close enough => snap
+      this.x = pt.x;
+      this.y = pt.y;
+      this.updatePosition();
+      this.routeIndex++;
+      if(this.routeIndex >= this.route.length){
+        this.inSeat = true;
+        this.circle.setStrokeStyle(2, 0xffffff);
+      }
+      return;
+    }
+    // otherwise move step
+    dx /= dist;
+    dy /= dist;
+    const nextX = this.x + dx*this.speed;
+    const nextY = this.y + dy*this.speed;
+
+    // Collision check with other passengers
+    // If nextX, nextY is too close to any occupant in front, we do not move
+    // We'll define "in front" => all passengers who have routeIndex <= ours
+    // or just check every passenger who hasn't finished
+    for(let p of passengers){
+      if(p === this || p.inSeat) continue;
+      const ddx = p.x - nextX;
+      const ddy = p.y - nextY;
+      const ddist = Math.sqrt(ddx*ddx + ddy*ddy);
+      if(ddist < (this.radius*2.5)){ 
+        // ~2.5*r => about 25 px
+        // if too close, skip movement => "queue"
+        return;
+      }
+    }
+
+    // If no collision, commit the move
+    this.x = nextX;
+    this.y = nextY;
+    this.updatePosition();
+  }
+
+  updatePosition(){
+    this.circle.x = this.x;
+    this.circle.y = this.y;
+    this.labelText.x = this.x - 12;
+    this.labelText.y = this.y - 28;
+  }
+
+  destroy(){
+    this.circle.destroy();
+    this.labelText.destroy();
   }
 }
 
-/* ========== BOARDING SCENE ========== */
+/* =============== BOARDING SCENE =============== */
 class BoardingScene extends Phaser.Scene {
   constructor(){
     super("BoardingScene");
   }
 
   init(){
-    this.selectedMethod    = "front-back"; // default
+    this.selectedMethod = "front-back";
     this.simulationRunning = false;
-    this.boardingFinished  = false;
-    this.startTime         = 0;
-    this.endTime           = 0;
+    this.boardingFinished = false;
+    this.startTime = 0;
+    this.endTime = 0;
 
-    // arrays
-    this.seats      = []; // { row, col, x, y, w, h, label }
-    this.passengers = [];
-    this.rowData    = [];
+    this.seats = [];      // seat objects
+    this.rowData = [];    // each row => { row, aisleY }
+    this.passengers = []; // active passenger objects
   }
 
   preload(){
@@ -204,306 +236,281 @@ class BoardingScene extends Phaser.Scene {
   }
 
   create(){
-    // build airplane shape
-    this.createAirplane();
+    // 1) Build plane geometry
+    this.createPlane();
 
-    // build seat layout
+    // 2) Build seats
     this.buildSeats();
 
-    // build rowData
+    // 3) Build row data (center aisle lines)
     this.buildRowData();
 
-    // set up text
-    this.infoText = this.add.text(20, 20, "", {
+    // Info text at bottom left
+    this.infoText = this.add.text(20, 560, "Ready...", {
       font: "18px Arial",
       fill: "#333"
-    }).setDepth(10);
+    }).setDepth(999);
 
-    // hook up boarding method buttons
-    document.getElementById("btnFrontBack").onclick  = ()=>{ this.selectedMethod = "front-back";  this.updateInfo(); };
-    document.getElementById("btnBackFront").onclick  = ()=>{ this.selectedMethod = "back-front";  this.updateInfo(); };
-    document.getElementById("btnRandom").onclick     = ()=>{ this.selectedMethod = "random";      this.updateInfo(); };
-    document.getElementById("btnWindowFirst").onclick= ()=>{ this.selectedMethod = "window-first";this.updateInfo(); };
-    document.getElementById("btnAisleFirst").onclick = ()=>{ this.selectedMethod = "aisle-first"; this.updateInfo(); };
-    document.getElementById("btnOptimal").onclick    = ()=>{ this.selectedMethod = "optimal";     this.updateInfo(); };
+    // Hook up method buttons
+    document.getElementById("btnFrontBack").onclick  = ()=>{this.selectedMethod="front-back";this.updateInfo();};
+    document.getElementById("btnBackFront").onclick  = ()=>{this.selectedMethod="back-front";this.updateInfo();};
+    document.getElementById("btnRandom").onclick     = ()=>{this.selectedMethod="random";this.updateInfo();};
+    document.getElementById("btnWindowFirst").onclick= ()=>{this.selectedMethod="window-first";this.updateInfo();};
+    document.getElementById("btnAisleFirst").onclick = ()=>{this.selectedMethod="aisle-first";this.updateInfo();};
+    document.getElementById("btnOptimal").onclick    = ()=>{this.selectedMethod="optimal";this.updateInfo();};
 
-    // Start Boarding
-    document.getElementById("startBtn").onclick = ()=> {
+    // Start & Clear buttons
+    document.getElementById("startBtn").onclick = ()=>{
       if(!this.simulationRunning){
         this.startBoarding();
       }
     };
-
-    // Clear Boarding
-    document.getElementById("clearBtn").onclick = ()=> {
+    document.getElementById("clearBtn").onclick = ()=>{
       this.clearBoarding();
     };
 
-    // initial info
     this.updateInfo();
   }
 
   update(time, delta){
     if(this.simulationRunning && !this.boardingFinished){
-      // check if all seated
-      const allSeated = this.passengers.every(p => p.inSeat === true);
-      if(allSeated){
+      // update each passenger
+      let notSeatedCount = 0;
+      for(let p of this.passengers){
+        if(!p.inSeat){
+          p.update(this.passengers);
+          notSeatedCount++;
+        }
+      }
+      if(notSeatedCount===0){
         this.boardingFinished = true;
         this.endTime = performance.now();
         const totalSec = ((this.endTime - this.startTime)/1000).toFixed(2);
-        this.infoText.setText(`All boarded in ${totalSec}s. Method: ${this.selectedMethod}`);
+        this.infoText.setText(`All seated! Time: ${totalSec}s, Method: ${this.selectedMethod}`);
       }
     }
   }
 
   updateInfo(){
-    const info = `Method: ${this.selectedMethod}`;
-    this.infoText.setText(info);
-    document.getElementById("info").textContent = info;
+    let text = `Method: ${this.selectedMethod}`;
+    this.infoText.setText(text);
+    document.getElementById("info").textContent = text;
   }
 
-  /* ========== CREATE THE AIRPLANE (TOP-DOWN VIEW) ========== */
-  createAirplane(){
-    // We'll define a bounding box for the plane
-    // to ensure it fits 1000x600 well
-    // Cockpit at top, tail at bottom
-    this.planeBox = {
-      x: 300,  // center horizontally
-      y: 50,
-      w: 400,
-      h: 450
-    };
+  /* ========== 1) CREATE PLANE GEOMETRY (TOP-DOWN) ========== */
+  createPlane(){
+    // We'll define the plane to fit a 1000x600 area:
+    // cockpit at top, tail at bottom, wings to the sides
+    this.planeRect = { x: 200, y: 50, w: 600, h: 450 };
 
-    // Draw fuselage rectangle
-    const fuselageG = this.add.graphics({ lineStyle:{ width: 4, color: 0xB3C4C1 }, fillStyle:{ color: 0xE5FFFB }});
-    fuselageG.fillRect(this.planeBox.x, this.planeBox.y, this.planeBox.w, this.planeBox.h);
-    fuselageG.strokeRect(this.planeBox.x, this.planeBox.y, this.planeBox.w, this.planeBox.h);
+    // Fuselage rectangle
+    const fuselageG = this.add.graphics({ 
+      lineStyle: { width:4, color:0xB3C4C1 }, 
+      fillStyle: { color:0xE5FFFB } 
+    });
+    fuselageG.fillRect(this.planeRect.x, this.planeRect.y, this.planeRect.w, this.planeRect.h);
+    fuselageG.strokeRect(this.planeRect.x, this.planeRect.y, this.planeRect.w, this.planeRect.h);
 
-    // Cockpit (small triangle at top center)
-    let cockpitG = this.add.graphics({ fillStyle:{ color: 0xCCEFEA }});
-    // top center of fuselage is (planeBox.x + planeBox.w/2, planeBox.y)
-    // let's create a small triangle above it
+    // Cockpit (triangle at top center)
+    const cockpitG = this.add.graphics({ fillStyle:{ color: 0xCCEFEA }});
     cockpitG.fillTriangle(
-      this.planeBox.x + this.planeBox.w/2, this.planeBox.y - 40,
-      this.planeBox.x + (this.planeBox.w/2) - 30, this.planeBox.y,
-      this.planeBox.x + (this.planeBox.w/2) + 30, this.planeBox.y
+      this.planeRect.x + this.planeRect.w/2, this.planeRect.y - 40,
+      this.planeRect.x + this.planeRect.w/2 - 40, this.planeRect.y,
+      this.planeRect.x + this.planeRect.w/2 + 40, this.planeRect.y
     );
 
-    // Wings (left and right, symmetrical)
-    const wingG = this.add.graphics({ fillStyle:{ color: 0xCCEFEA } });
-    const midX = this.planeBox.x + this.planeBox.w/2;
-    const midY = this.planeBox.y + this.planeBox.h/2;
-
-    // Left wing
+    // Wings (left & right)
+    const wingG = this.add.graphics({ fillStyle:{ color:0xCCEFEA } });
+    const midY = this.planeRect.y + this.planeRect.h/2;
+    // left wing
     wingG.fillTriangle(
-      this.planeBox.x, midY,                  // left middle edge
-      this.planeBox.x - 60, midY - 50,        // left top
-      this.planeBox.x - 60, midY + 50         // left bottom
+      this.planeRect.x, midY,
+      this.planeRect.x - 80, midY - 60,
+      this.planeRect.x - 80, midY + 60
     );
-
-    // Right wing
+    // right wing
     wingG.fillTriangle(
-      this.planeBox.x + this.planeBox.w, midY, // right middle edge
-      this.planeBox.x + this.planeBox.w + 60, midY - 50,
-      this.planeBox.x + this.planeBox.w + 60, midY + 50
+      this.planeRect.x + this.planeRect.w, midY,
+      this.planeRect.x + this.planeRect.w + 80, midY - 60,
+      this.planeRect.x + this.planeRect.w + 80, midY + 60
     );
 
-    // Tail (small rectangle at bottom center)
-    const tailG = this.add.graphics({ fillStyle:{ color: 0xCCEFEA }});
+    // Tail rectangle
+    const tailG = this.add.graphics({ fillStyle:{ color:0xCCEFEA }});
     tailG.fillRect(
-      this.planeBox.x + this.planeBox.w/2 - 15,
-      this.planeBox.y + this.planeBox.h,
-      30,
-      40
+      this.planeRect.x + this.planeRect.w/2 - 30,
+      this.planeRect.y + this.planeRect.h,
+      60, 40
     );
-
-    // planeDoorX for passengers to walk in horizontally
-    this.planeDoorX = this.planeBox.x + 30; 
   }
 
-  /* ========== BUILD SEATS (TOP = ROW1, BOTTOM = ROW10) ========== */
+  /* ========== 2) BUILD SEATS ========== */
   buildSeats(){
-    // We'll define 10 rows (top to bottom), 4 seats each (A,B - aisle - C,D left to right)
-    const seatWidth  = 40;
-    const seatHeight = 30;
-    const rowCount   = 10;
-    const topMargin  = this.planeBox.y + 30;
-    const bottomMargin = this.planeBox.y + this.planeBox.h - 30;
-    const leftMargin = this.planeBox.x + 20;
-    const rightMargin= this.planeBox.x + this.planeBox.w - 20;
-    
-    // vertical spacing
-    const totalSeatAreaHeight = (bottomMargin - topMargin);
-    const rowGap = totalSeatAreaHeight / rowCount;
+    // We'll have 10 rows, each with 4 seats: A,B (left), C,D (right) with a center aisle
+    // The top row is row=1 near planeRect.y+30, bottom row=10 near planeRect.y+planeRect.h-80
+    const rowCount = 10;
+    const topMargin = this.planeRect.y + 30;
+    const bottomMargin = this.planeRect.y + this.planeRect.h - 80;
+    const totalH = (bottomMargin - topMargin);
+    const rowGap = totalH / rowCount;
 
-    // horizontal arrangement for seats A,B -> aisle -> C,D
-    // We'll define some columns:
-    // A: leftMargin
-    // B: leftMargin + seatWidth + small gap
-    // aisle gap
-    // C
-    // D
-    const colGap  = 5; // gap between seats
-    const seatCols = {
-      A: leftMargin,
-      B: leftMargin + seatWidth + colGap,
-      // then an aisle gap of ~60
-      C: leftMargin + seatWidth*2 + colGap + 60,
-      D: leftMargin + seatWidth*3 + colGap + 60
-    };
+    // We'll define seat size
+    const seatW = 40, seatH = 30;
+    // We'll define a center aisle => left seats from x=planeRect.x+50 to x=planeRect.x+180, right seats from x=planeRect.x+380 to x=planeRect.x+510
+    // That leaves a gap in the center
+    const leftSeatX   = this.planeRect.x + 80;  // A
+    const leftSeatX2  = this.planeRect.x + 130; // B
+    const rightSeatX  = this.planeRect.x + 390; // C
+    const rightSeatX2 = this.planeRect.x + 440; // D
 
     const COLS = ["A","B","C","D"];
 
     for(let r=1; r<=rowCount; r++){
-      // row Y => topMargin + (r-1)*rowGap
-      // seat's Y => center the seat in that row gap
-      let seatY = topMargin + (r-1)*rowGap;
-      for(let c of COLS){
-        let seatX = seatCols[c];
-        let lbl = `${r}${c}`;
-        // Draw seat rectangle
-        let seatG = this.add.graphics({ lineStyle: { width:2, color:0x99A3F2 }, fillStyle:{ color:0x000080 }});
-        seatG.fillRect(seatX, seatY, seatWidth, seatHeight);
-        seatG.strokeRect(seatX, seatY, seatWidth, seatHeight);
-        this.add.text(seatX+5, seatY+8, lbl, {
-          font: "14px Arial",
-          fill: "#FFF"
-        });
-        this.seats.push({
-          label: lbl,
-          row: r,
-          col: c,
-          x: seatX,
-          y: seatY,
-          w: seatWidth,
-          h: seatHeight
-        });
-      }
+      const seatY = topMargin + (r-1)*rowGap;
+      // Left seats A,B
+      const ab = [
+        { col:"A", x:leftSeatX,   y:seatY },
+        { col:"B", x:leftSeatX2,  y:seatY }
+      ];
+      // Right seats C,D
+      const cd = [
+        { col:"C", x:rightSeatX,  y:seatY },
+        { col:"D", x:rightSeatX2, y:seatY }
+      ];
+      const rowSeats = [...ab, ...cd];
+      rowSeats.forEach((sobj, i)=>{
+        const label = `${r}${sobj.col}`;
+        this.drawSeat(sobj.x, sobj.y, seatW, seatH, label);
+      });
     }
   }
 
-  /* ========== BUILD ROW DATA (AISLE Y) ========== */
-  buildRowData(){
-    // We define rowData so each row has an aisleY
-    // We'll say the aisle is the horizontal center line => sprite.y doesn't change for row-based movement
-    // Instead we move them in from left, then down to rowY, then horizontally to seat
-    //
-    // But user wants them to walk "down the aisle." We'll define the aisle as the middle Y for each row
-    // Actually let's define the seat center for each row => seat #1's center?
-    // We'll do a simpler approach: the row's "aisleY" is the seatY + seatHeight/2
-    // (like a corridor that runs horizontally).
-    // Then passengers can walk from top left to "planeDoorX, seatYcenter," then horizontally to seat.
+  drawSeat(x, y, w, h, label){
+    // store seat data
+    const rowNum = parseInt(label);
+    const col = label.replace(/^\d+/,"");
+    // seat rectangle
+    let g = this.add.graphics({ lineStyle:{ width:2, color:0x99A3F2 }, fillStyle:{ color:0x000080 } });
+    g.fillRect(x, y, w, h);
+    g.strokeRect(x, y, w, h);
+    // text
+    this.add.text(x+4, y+8, label, { font:"14px Arial", fill:"#FFF" });
+    this.seats.push({
+      label, row:rowNum, col,
+      x, y, w, h
+    });
+  }
 
-    // For each row in seats, pick row #, find the seat in col B or C as "aisle reference," or just average
-    let uniqueRows = [...new Set(this.seats.map(s => s.row))].sort((a,b)=>a-b);
-    for(let r of uniqueRows){
-      let rowSeats = this.seats.filter(s => s.row===r);
-      let avgY = rowSeats.reduce((acc,v)=>acc+(v.y + v.h/2), 0)/rowSeats.length;
-      this.rowData.push({ row: r, aisleY: avgY });
-    }
+  /* ========== 3) BUILD ROW DATA (AISLE Y) ========== */
+  buildRowData(){
+    // For each row, define an aisleY => roughly the seat center
+    // We'll just pick seat "B" or "C" as a reference
+    let uniqueRows = [...new Set(this.seats.map(s=>s.row))].sort((a,b)=>a-b);
+    uniqueRows.forEach(r=>{
+      const rowSeats = this.seats.filter(s=>s.row===r);
+      // pick the average center y
+      const avgY = rowSeats.reduce((acc,v)=> acc+(v.y+v.h/2), 0)/rowSeats.length;
+      this.rowData.push({ row:r, aisleY: avgY });
+    });
   }
 
   /* ========== START BOARDING ========== */
   startBoarding(){
     this.simulationRunning = true;
-    this.boardingFinished  = false;
+    this.boardingFinished = false;
     this.startTime = performance.now();
-    this.infoText.setText("Boarding started... Method: " + this.selectedMethod);
+    this.infoText.setText(`Boarding started... Method: ${this.selectedMethod}`);
 
     // reorder seats
-    let seatList = this.seats.map(s => s.label);
-    seatList = this.reorderSeats(seatList, this.selectedMethod);
+    let seatLabels = this.seats.map(s=>s.label);
+    seatLabels = this.reorderSeats(seatLabels, this.selectedMethod);
 
-    // spawn passengers with small delays
-    seatList.forEach((lbl, i)=>{
-      this.time.delayedCall(i*250, ()=> {
-        this.spawnPassenger(lbl);
+    // spawn them from top center
+    // top center: x=planeRect.x + planeRect.w/2, y=planeRect.y - 30
+    const spawnX = this.planeRect.x + this.planeRect.w/2;
+    const spawnY = this.planeRect.y - 30;
+
+    seatLabels.forEach((lbl, i)=>{
+      this.time.delayedCall(i*400, ()=>{
+        // find seat
+        const seatObj = this.seats.find(s=>s.label===lbl);
+        // color code by col
+        let color = 0xDDDDDD;
+        switch(seatObj.col){
+          case "A": color=0x008080; break; // teal
+          case "B": color=0x0000A0; break; // darkblue
+          case "C": color=0x800080; break; // purple
+          case "D": color=0xAA0000; break; // red
+        }
+        const passenger = new Passenger(this, lbl, seatObj, spawnX, spawnY, color);
+        this.passengers.push(passenger);
       });
     });
   }
 
   /* ========== CLEAR BOARDING ========== */
   clearBoarding(){
-    // stop boarding
-    this.simulationRunning  = false;
-    this.boardingFinished   = false;
-    this.infoText.setText("Boarding cleared. Select method and Start again.");
-    // remove existing passengers
+    this.simulationRunning = false;
+    this.boardingFinished = false;
+    this.infoText.setText("Boarding cleared. Pick method & start again.");
+    // destroy all passengers
     this.passengers.forEach(p => p.destroy());
     this.passengers = [];
   }
 
-  /* ========== SPAWN PASSENGER ========== */
-  spawnPassenger(seatLabel){
-    // spawn outside top-left
-    const spawnX = this.planeBox.x - 50;
-    const spawnY = this.planeBox.y + 50; 
-    // random offset so not all spawn exactly same y
-    let offset = Phaser.Math.Between(-30,30);
-    const px = spawnX;
-    const py = spawnY + offset;
-
-    // random color
-    const colors = [0xFFDBAC, 0xF1C27D, 0xE0AC69, 0xC68642, 0x8D5524];
-    const color = colors[Phaser.Math.Between(0, colors.length-1)];
-
-    let passenger = new Passenger(this, seatLabel, px, py, color);
-    this.passengers.push(passenger);
-  }
-
-  /* ========== REORDER SEATS BY METHOD ========== */
-  reorderSeats(seatList, method){
-    // parse row/col
-    let data = seatList.map(lbl => {
+  /* ========== REORDER SEATS ACCORDING TO METHOD ========== */
+  reorderSeats(list, method){
+    let arr = list.map(lbl=>{
       return {
         label: lbl,
         row: parseInt(lbl),
         col: lbl.replace(/^\d+/,"")
       };
     });
-    // define priorities
-    let windowOrder = { "A": 1, "D": 2, "B": 3, "C": 4 };
-    let aisleOrder  = { "B": 1, "C": 2, "A": 3, "D": 4 };
+    const windowOrder = { "A":1, "D":2, "B":3, "C":4 };
+    const aisleOrder = { "B":1, "C":2, "A":3, "D":4 };
+
     switch(method){
       case "front-back":
-        data.sort((a,b)=> (a.row - b.row) || a.col.localeCompare(b.col));
+        arr.sort((a,b)=> (a.row-b.row)||(a.col.localeCompare(b.col)));
         break;
       case "back-front":
-        data.sort((a,b)=> (b.row - a.row) || a.col.localeCompare(b.col));
+        arr.sort((a,b)=> (b.row-a.row)||(a.col.localeCompare(b.col)));
         break;
       case "random":
-        for(let i=data.length-1;i>0;i--){
-          let j = Phaser.Math.Between(0,i);
-          [data[i], data[j]]=[data[j], data[i]];
+        for(let i=arr.length-1;i>0;i--){
+          const j = Phaser.Math.Between(0,i);
+          [arr[i], arr[j]]=[arr[j], arr[i]];
         }
         break;
       case "window-first":
-        data.sort((a,b)=>{
-          if(a.row!==b.row) return a.row - b.row;
+        arr.sort((a,b)=>{
+          if(a.row!==b.row) return a.row-b.row;
           return windowOrder[a.col] - windowOrder[b.col];
         });
         break;
       case "aisle-first":
-        data.sort((a,b)=>{
-          if(a.row!==b.row) return a.row - b.row;
+        arr.sort((a,b)=>{
+          if(a.row!==b.row) return a.row-b.row;
           return aisleOrder[a.col] - aisleOrder[b.col];
         });
         break;
       case "optimal":
-        // example: back-front window-first
-        data.sort((a,b)=>{
-          if(a.row!==b.row) return b.row - a.row; 
-          return windowOrder[a.col] - windowOrder[b.col];
+        // placeholder => back-front & window-first
+        arr.sort((a,b)=>{
+          if(a.row!==b.row) return b.row-a.row; // back->front
+          return windowOrder[a.col] - windowOrder[b.col]; // window first
         });
         break;
       default:
-        data.sort((a,b)=> (a.row - b.row) || a.col.localeCompare(b.col));
+        arr.sort((a,b)=> (a.row-b.row)||(a.col.localeCompare(b.col)));
     }
-    return data.map(d => d.label);
+
+    return arr.map(o=>o.label);
   }
 }
 
-/* ========== GAME CONFIG ========== */
+/* ========== CREATE GAME ========== */
 const config = {
   type: Phaser.AUTO,
   width: 1000,
