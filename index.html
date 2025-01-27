@@ -274,7 +274,7 @@
           const collision = passengers.some(p => {
             if(p === this || p.inSeat) return false;
             const dist = Phaser.Math.Distance.Between(nextX, nextY, p.sprite.x, p.sprite.y);
-            return dist < (this.sprite.radius + p.sprite.radius + 10); // Increased buffer from 5 to 10
+            return dist < (this.sprite.radius + p.sprite.radius )/2; // reduced to half
           });
 
           if(!collision){
