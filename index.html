@@ -126,6 +126,7 @@
       - Display boarding times next to method buttons
       - Toast notifications for user feedback
       - Automatically clear boarding before starting a new one
+      - Prevent passenger overlapping at entrance
     */
 
     /* =============== CONFIGURATION VARIABLES =============== */
@@ -134,8 +135,8 @@
       screenHeight:800,         // Height of the game screen
 
       planeOffset: {            // Offset for the entire plane
-        x: 100,
-        y: 0
+        x: 100,                  // Example offset: 100 pixels right
+        y: 50                    // Example offset: 50 pixels down
       },
 
       plane: {
@@ -273,7 +274,7 @@
           const collision = passengers.some(p => {
             if(p === this || p.inSeat) return false;
             const dist = Phaser.Math.Distance.Between(nextX, nextY, p.sprite.x, p.sprite.y);
-            return dist < (this.sprite.radius + p.sprite.radius + 5);
+            return dist < (this.sprite.radius + p.sprite.radius + 10); // Increased buffer from 5 to 10
           });
 
           if(!collision){
@@ -584,7 +585,8 @@
 
         // Spawn passengers with staggered delays
         seatLabels.forEach((lbl, index) => {
-          const delayedCall = this.time.delayedCall(index * 300, () => {
+          const spawnDelay = index * 500; // Increased delay from 300ms to 500ms
+          const delayedCall = this.time.delayedCall(spawnDelay, () => {
             // Find seat object
             const seatObj = this.seats.find(s => s.label === lbl);
             if(!seatObj){
@@ -602,12 +604,13 @@
               default: color = 0xFFFFFF;
             }
 
-            // Spawn passenger at plane door with slight Y offset
-            const spawnX = this.planeDoorX;
-            const spawnY = this.planeRect.y - 30 + Phaser.Math.Between(-10,10);
+            // Calculate spawnY with increased variation to prevent overlapping
+            const baseSpawnY = this.planeRect.y - 30;
+            const spawnYOffset = (index % 5) * 20; // Spread out spawnY for every 5 passengers
+            const spawnY = baseSpawnY + spawnYOffset;
 
             // Create Passenger
-            new Passenger(this, lbl, seatObj, spawnX, spawnY, color);
+            new Passenger(this, lbl, seatObj, this.planeDoorX, spawnY, color);
           });
 
           // Store delayedCall for potential cancellation
